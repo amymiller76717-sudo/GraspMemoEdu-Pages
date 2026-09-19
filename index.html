@@ -30,10 +30,16 @@
       <div class="pageShell">
       <header class="appHeader">
         <span class="appName">数学学习</span>
+        <div class="headerActions">
+        <button class="textButton identityButton" id="identityButton" type="button" aria-haspopup="dialog" aria-label="邀请码登录，当前游客">
+          <span id="identityName">游客</span>
+          <span class="identityAction" id="identityAction">邀请码登录</span>
+        </button>
         <button class="textButton settingsButton" id="settingsButton" type="button" aria-haspopup="dialog">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/><path d="M7 3v4M13 8v4M8 13v4"/></svg>
           连接设置
         </button>
+        </div>
       </header>
 
       <main class="lesson" id="lessonContent" tabindex="-1">
@@ -75,6 +81,25 @@
       </main>
       </div>
     </div>
+
+    <dialog id="identityDialog" class="settingsDialog identityDialog" aria-labelledby="identityTitle">
+      <form id="identityForm">
+        <div class="dialogHeading">
+          <h2 id="identityTitle">邀请码登录</h2>
+          <button id="closeIdentityButton" class="iconButton" type="button" aria-label="关闭邀请码登录">×</button>
+        </div>
+        <p class="dialogIntro" id="identityDialogStatus">当前使用游客身份。</p>
+        <label for="invitationCode">邀请码</label>
+        <input id="invitationCode" type="password" autocomplete="off" spellcheck="false" placeholder="输入管理员提供的邀请码" maxlength="512" required>
+        <p class="fieldHint">登录后，可学习管理员为你的账号开放的课程。</p>
+        <p id="identityError" class="fieldError" role="alert" hidden></p>
+        <div class="dialogActions">
+          <button id="guestIdentityButton" class="secondaryButton" type="button" hidden>切回游客</button>
+          <button id="cancelIdentityButton" class="secondaryButton" type="button">取消</button>
+          <button id="identitySubmitButton" class="primaryButton" type="submit">登录</button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="settingsDialog" class="settingsDialog" aria-labelledby="settingsTitle">
       <form id="settingsForm">

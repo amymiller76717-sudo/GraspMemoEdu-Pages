@@ -39,6 +39,10 @@ button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke
 .historyDrawerToggle, .historyScrim { display: none; }
 .appHeader { display: flex; justify-content: space-between; align-items: center; min-height: 72px; border-bottom: 1px solid #ececec; }
 .appName { color: var(--ma-navy); font-size: 14px; font-weight: 700; letter-spacing: .04em; }
+.headerActions { display: flex; align-items: center; gap: 20px; min-width: 0; }
+.identityButton { min-width: 0; font-size: 12px !important; }
+#identityName { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #6a6a6a; }
+.identityAction { color: var(--ma-blue); white-space: nowrap; }
 .textButton { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 0; border-radius: 3px; background: transparent; color: var(--ma-blue); padding: 8px 2px; font-size: 13px; line-height: 1.5; }
 .textButton:hover { color: #084f85; text-decoration: underline; text-underline-offset: 3px; }
 .settingsButton { color: #747474; font-size: 12px; }
@@ -119,13 +123,14 @@ mjx-container[jax="SVG"] text { font-family: "Microsoft YaHei", sans-serif; }
 .answerBottom { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-top: 13px; }
 .inputHint { color: #7c7c7c; font-size: 11px; margin: 0 !important; max-width: 410px; }
 .inputError { font-size: 12px; color: #a44735; margin: 8px 0 0 !important; }
-.stepNavigation { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px 20px; border-top: 1px solid #ededed; margin-top: 26px; padding-top: 18px; }
+.stepNavigation { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 14px 20px; border-top: 1px solid #ededed; margin-top: 26px; padding-top: 18px; }
 .historyPagination { display: flex; gap: 8px; }
 .pageButton { min-height: 37px; padding: 7px 15px; font-size: 13px; }
 .pageButton:disabled { opacity: .4; }
-.continueRow { display: flex; justify-content: flex-end; margin-left: auto; }
+.continueRow { display: flex; justify-content: flex-end; }
 .continueRow .primaryButton { min-width: 123px; }
 .choiceNotice { color: #686868; font-size: 13px; }
+.featureNotice { margin-top: 22px !important; padding: 12px 14px; border: 1px solid #e6e9ec; border-radius: 3px; color: #767676; background: #fafbfc; font-size: 12px; }
 .feedback { display: flex; align-items: flex-start; gap: 10px; border-radius: 3px; padding: 14px; margin-top: 23px; font-size: 13px; }
 .feedback.correct { background: #f0f7f2; color: var(--green); border: 1px solid #dcecdf; }
 .feedback.incorrect { background: #fcf8ef; color: var(--amber); border: 1px solid #f0e5cc; }
@@ -203,6 +208,9 @@ mjx-container[jax="SVG"] text { font-family: "Microsoft YaHei", sans-serif; }
 @media (max-width: 520px) {
   .appLayout, .appLayout.historyCollapsed { padding-right: 13px; padding-left: 52px; }
   .appHeader { min-height: 61px; }
+  .headerActions { gap: 12px; }
+  .identityButton { gap: 5px; }
+  #identityName { max-width: 58px; }
   .lesson { margin-top: 27px; }
   .lessonTitle { font-size: 24px; }
   .step { padding: 18px 16px 20px; }
