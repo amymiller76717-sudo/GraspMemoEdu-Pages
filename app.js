@@ -1,4 +1,4 @@
-import { t, translateMessage, applyStaticTranslations, learningTitle } from "./i18n.js?v=17ba24a9655817c1";
+import { t, translateMessage, applyStaticTranslations, learningTitle } from "./i18n.js?v=ed1e66598212b7cf";
 
 applyStaticTranslations();
 
@@ -53,6 +53,7 @@ let publicMode = false;
 let deploymentReady = false;
 let deploymentPromise = null;
 let deploymentRefreshAt = 0;
+let deploymentIdentityMigration = null;
 let legacyScopes = [];
 let legacyCurrentIdentities = [];
 let legacyGuestIdentities = [];
@@ -174,7 +175,8 @@ async function ensureDeployment({ refresh = false } = {}) {
         if (previousOrigin) {
           // Existing identity migration verifies the old token with /access before
           // writing it into the new scope. Never turn a failed account into a guest.
-          connectionGeneration += 1;
+          deploymentIdentityMigration = access && identityToken
+            ? { origin: previousOrigin, token: identityToken, learner: access.learner_id, role: access.role } : deploymentIdentityMigration;
           sessionToken = null;
           access = null;
         }
@@ -228,7 +230,7 @@ async function request(path, { method = "GET", body, bootstrap = false, timeout 
   const base = apiBase;
   const local = !publicMode;
   if (!bootstrap && local && !sessionToken) await ensureSession();
-  const changed = () => identityEpoch !== identityGeneration || (!identityOperation && generation !== connectionGeneration)
+  const changed = () => base !== apiBase || identityEpoch !== identityGeneration || (!identityOperation && generation !== connectionGeneration)
     || (!bootstrap && storedIdentity !== storageRead(localStorage, identityKey(), ""));
   if (changed()) throw new ApiError(t("身份或学习页面已更新，请重试。"), 0, "connection_changed");
   const headers = { Accept: "application/json" };
@@ -336,6 +338,26 @@ async function ensureSession() {
 
 function rememberIdentity(result) {
   if (!result?.identity_token || !["guest", "account"].includes(result.access?.role) || !Array.isArray(result.access.features) || !Array.isArray(result.access.topics)) throw new ApiError(t("服务暂不可用，请稍后重试。"), 0, "invalid_access");
+  const migration = deploymentIdentityMigration;
+  if (migration && migration.token === result.identity_token && migration.learner === result.access.learner_id && migration.role === result.access.role) {
+    // Only the verified same learner may carry tab-local drafts/timers/uncertain
+    // submission IDs across an endpoint change. Keep any newer destination value.
+    for (const kind of ["draft", "elapsed", "submission"]) {
+      const oldPrefix = `${kind}:${migration.origin}:${migration.learner}:`;
+      const newPrefix = `${kind}:${scope()}:${migration.learner}:`;
+      try {
+        for (const key of Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))) {
+          if (!key?.startsWith(STORAGE_PREFIX + oldPrefix)) continue;
+          const target = newPrefix + key.slice(STORAGE_PREFIX.length + oldPrefix.length);
+          if (storageRead(sessionStorage, target) === null) storageWrite(sessionStorage, target, sessionStorage.getItem(key));
+        }
+      } catch { /* Disabled browser storage does not affect server progress. */ }
+      for (const [key, value] of [...drafts]) {
+        if (key.startsWith(oldPrefix) && !drafts.has(newPrefix + key.slice(oldPrefix.length))) drafts.set(newPrefix + key.slice(oldPrefix.length), value);
+      }
+    }
+  }
+  deploymentIdentityMigration = null;
   identityToken = result.identity_token;
   access = result.access;
   identityProblem = null;
@@ -1441,7 +1463,7 @@ async function openTopic(id, subjectId) {
   await start();
 }
 
-const { initPortal } = await import("./portal.js?v=17ba24a9655817c1");
+const { initPortal } = await import("./portal.js?v=ed1e66598212b7cf");
 portal = initPortal({
   fetchGuideAsset: async (url, subjectId) => {
     try { return await fetchGuideAsset(url, subjectId); }

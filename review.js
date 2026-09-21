@@ -1,4 +1,4 @@
-import { t, translateMessage, learningTitle } from './i18n.js?v=17ba24a9655817c1';
+import { t, translateMessage, learningTitle } from './i18n.js?v=ed1e66598212b7cf';
 
 const node = (tag, cls = '', text) => {
   const item = document.createElement(tag); item.className = cls;
