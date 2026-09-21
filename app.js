@@ -1,4 +1,4 @@
-import { t, translateMessage, applyStaticTranslations, learningTitle } from "./i18n.js?v=21201ffd52d3fd72";
+import { t, translateMessage, applyStaticTranslations, learningTitle } from "./i18n.js?v=17ba24a9655817c1";
 
 applyStaticTranslations();
 
@@ -6,6 +6,7 @@ const $ = (id) => document.getElementById(id);
 const STORAGE_PREFIX = "math-learning-web:";
 const REQUEST_TIMEOUT = 18000;
 const STATE_TIMEOUT = 9000;
+const DEPLOYMENT_REFRESH_INTERVAL = 30000;
 
 function storageRead(storage, key, fallback = null) {
   try { return storage.getItem(STORAGE_PREFIX + key) ?? fallback; } catch { return fallback; }
@@ -51,6 +52,7 @@ let apiBase = "";
 let publicMode = false;
 let deploymentReady = false;
 let deploymentPromise = null;
+let deploymentRefreshAt = 0;
 let legacyScopes = [];
 let legacyCurrentIdentities = [];
 let legacyGuestIdentities = [];
@@ -134,8 +136,8 @@ class ApiError extends Error {
   }
 }
 
-async function ensureDeployment() {
-  if (deploymentReady) return;
+async function ensureDeployment({ refresh = false } = {}) {
+  if (deploymentReady && !refresh) return;
   if (!deploymentPromise) {
     const pending = (async () => {
       const controller = new AbortController();
@@ -152,10 +154,14 @@ async function ensureDeployment() {
           if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw new Error("deployment_invalid");
           origin = url.origin;
         }
+        // Rechecking an unchanged deployment must not disturb identity or pending work.
+        if (deploymentReady && origin === apiBase) return;
+        const previousOrigin = deploymentReady ? scope() : null;
         // Previous connection values are migration sources only, never API routing.
         const oldAddress = storageRead(localStorage, "api-base", "");
         const lastOrigin = storageRead(localStorage, "last-api-origin", "");
         const candidates = [window.location.origin];
+        if (previousOrigin) candidates.unshift(previousOrigin);
         for (const source of [oldAddress, lastOrigin].filter(Boolean)) {
           try {
             const old = new URL(source);
@@ -165,6 +171,13 @@ async function ensureDeployment() {
         legacyScopes = [...new Set(candidates)];
         legacyCurrentIdentities = [...new Set(legacyScopes.map((source) => storageRead(localStorage, `identity:${source}`, "")).filter(Boolean))];
         legacyGuestIdentities = [...new Set(legacyScopes.map((source) => storageRead(localStorage, `guest-identity:${source}`, "")).filter(Boolean))];
+        if (previousOrigin) {
+          // Existing identity migration verifies the old token with /access before
+          // writing it into the new scope. Never turn a failed account into a guest.
+          connectionGeneration += 1;
+          sessionToken = null;
+          access = null;
+        }
         apiBase = origin;
         publicMode = Boolean(configured);
         identityToken = storageRead(localStorage, identityKey(), "");
@@ -182,6 +195,21 @@ async function ensureDeployment() {
   await deploymentPromise;
 }
 
+async function refreshFailedDeployment(error, failedBase) {
+  if (!publicMode || !(["network_error", "timeout"].includes(error.code)
+      || [502, 503, 504, 530].includes(error.status))) return false;
+  if (apiBase !== failedBase) return true;
+  if (deploymentPromise) {
+    try { await deploymentPromise; } catch { return false; }
+    return apiBase !== failedBase;
+  }
+  if (Date.now() < deploymentRefreshAt) return false;
+  deploymentRefreshAt = Date.now() + DEPLOYMENT_REFRESH_INTERVAL;
+  try { await ensureDeployment({ refresh: true }); }
+  catch { return false; } // Preserve the original failure; a broken config cannot reroute us.
+  return apiBase !== failedBase;
+}
+
 function retireLegacyConnection() {
   // Remember the scope only after this service has verified the learning identity.
   storageWrite(localStorage, "last-api-origin", scope());
@@ -191,7 +219,7 @@ function retireLegacyConnection() {
   legacyGuestIdentities = [];
 }
 
-async function request(path, { method = "GET", body, bootstrap = false, timeout = REQUEST_TIMEOUT, reauthenticated = false, skipIdentity = false, suppressIdentity = false, identityOverride, identityOperation = false } = {}) {
+async function request(path, { method = "GET", body, bootstrap = false, timeout = REQUEST_TIMEOUT, reauthenticated = false, skipIdentity = false, suppressIdentity = false, identityOverride, identityOperation = false, deploymentRetried = false } = {}) {
   const identityEpoch = identityGeneration;
   if (!deploymentReady) await ensureDeployment();
   if (!bootstrap && !skipIdentity) await ensureIdentity();
@@ -240,9 +268,18 @@ async function request(path, { method = "GET", body, bootstrap = false, timeout 
     if (!bootstrap && !skipIdentity) identityRecoveryAllowed = true;
     return result;
   } catch (error) {
-    if (error instanceof ApiError) throw error;
-    if (error.name === "AbortError") throw new ApiError(t("等待服务响应超时。已保存的进度不会丢失，请重试。"), 0, "timeout");
-    throw new ApiError(t("服务暂不可用，请稍后重试。"), 0, "network_error");
+    const failure = error instanceof ApiError ? error : error.name === "AbortError"
+      ? new ApiError(t("等待服务响应超时。已保存的进度不会丢失，请重试。"), 0, "timeout")
+      : new ApiError(t("服务暂不可用，请稍后重试。"), 0, "network_error");
+    clearTimeout(timer);
+    if (!deploymentRetried && await refreshFailedDeployment(failure, base)) {
+      // A failed write may already have reached the backend. Only reads can be
+      // replayed here; existing submission reconciliation handles uncertain writes.
+      if (method === "GET" && identityEpoch === identityGeneration) {
+        return request(path, { method, body, bootstrap, timeout, reauthenticated, skipIdentity, suppressIdentity, identityOverride, identityOperation, deploymentRetried: true });
+      }
+    }
+    throw failure;
   } finally { clearTimeout(timer); }
 }
 
@@ -1404,7 +1441,7 @@ async function openTopic(id, subjectId) {
   await start();
 }
 
-const { initPortal } = await import("./portal.js?v=21201ffd52d3fd72");
+const { initPortal } = await import("./portal.js?v=17ba24a9655817c1");
 portal = initPortal({
   fetchGuideAsset: async (url, subjectId) => {
     try { return await fetchGuideAsset(url, subjectId); }
