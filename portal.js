@@ -1,7 +1,11 @@
-import { t, getLanguage, setLanguage, locale, translateMessage, learningTitle } from "./i18n.js?v=ed1e66598212b7cf";
-import { createReviewView } from "./review.js?v=ed1e66598212b7cf";
-import { renderCourseGraph } from "./course-graph.js?v=ed1e66598212b7cf";
-import { subjectHref, parsePlatformRoute, renderSubjectHome, renderSubjectEmpty, applySubjectTheme, subjectLabel, subjectLogo } from "./subjects.js?v=ed1e66598212b7cf";
+import { t, getLanguage, setLanguage, locale, translateMessage, learningTitle } from "./i18n.js?v=d0d0539aa27e37cc";
+import { createReviewView } from "./review.js?v=d0d0539aa27e37cc";
+import { renderCourseGraph } from "./course-graph.js?v=d0d0539aa27e37cc";
+import {questionInput} from './question-input.js?v=d0d0539aa27e37cc';
+import {reportableContent, installContentReporting} from './content-report.js?v=d0d0539aa27e37cc';
+import {createCatalogPicker} from './catalog-picker.js?v=d0d0539aa27e37cc';
+import {createAtomicView} from './atomic.js?v=d0d0539aa27e37cc';
+import { subjectHref, parsePlatformRoute, renderSubjectHome, renderSubjectEmpty, applySubjectTheme, subjectLabel, subjectLogo } from "./subjects.js?v=d0d0539aa27e37cc";
 
 const $ = (id) => document.getElementById(id);
 const node = (tag, className = "", text) => {
@@ -36,6 +40,26 @@ export function initPortal(bridge) {
     subjectId ? `${path}${path.includes("?") ? "&" : "?"}subject_id=${encode(subjectId)}` : path, options);
   const call = (path, options) => scopedRequest(path, options, currentRoute?.subjectId);
   const allowed = (feature) => Boolean(bridge.getAccess()?.features?.includes(feature));
+  async function saveCourseSelection(courseId, subjectId) {
+    if (busyCourse) throw new Error(t('portal.selecting.32'));
+    busyCourse = true;
+    try {
+      const result = await scopedRequest('catalog/select', {method: 'POST', body: {course_id: courseId}}, subjectId);
+      if (result.selected_course_id !== courseId) throw new Error(t('catalog.saveUnconfirmed'));
+      return result;
+    } finally { busyCourse = false; }
+  }
+  const catalogPicker = createCatalogPicker({
+    button: $('catalogToggle'), panel: $('catalogPanel'),
+    readSubjects: () => subjects ? Promise.resolve({subjects}) : bridge.request('subjects'),
+    readCatalog: subjectId => scopedRequest('catalog', undefined, subjectId),
+    selectCourse: saveCourseSelection, getSubject: () => currentRoute?.subjectId,
+    onSelected: (courseId, subjectId) => {
+      catalog = null; selectedCourse = courseId; dashboards.clear();
+      const hash = subjectHref(subjectId, '/learn'); scrolls.delete(hash);
+      if (location.hash === hash) void route(); else location.hash = hash;
+    },
+  });
   const learnHref = () => subjectHref(currentRoute?.subjectId || "math", "/learn");
   const localHref = (path) => {
     const raw = path.replace(/^#/, "");
@@ -58,6 +82,9 @@ export function initPortal(bridge) {
       currentHash = routeKey(); currentRoute = parseRoute();
     },
   });
+  const atomic = createAtomicView({...bridge, request: call, root, homeHref: learnHref,
+    reviewHref: () => subjectHref(currentRoute?.subjectId, '/reviews'), formatDate: value => apiDate(value, true),
+    progressChanged: () => { dashboards.clear(); answerCache.clear(); }});
 
   function navigate(path, replace = false) {
     const hash = localHref(path);
@@ -108,6 +135,7 @@ export function initPortal(bridge) {
     for (const item of document.querySelectorAll(".mainNavigation [data-navigation]")) {
       const section = item.dataset.navigation;
       item.hidden = section === 'subjects' ? Boolean(subject) : !subject;
+      if (section === 'reviews') item.hidden = !['english', 'chinese', 'biology', 'chemistry'].includes(subject?.id);
       item.href = section === "subjects" ? "#/" : subjectHref(subject?.id || "math", `/${section}`);
     }
     $("topicHomeLink").href = learnHref();
@@ -196,7 +224,7 @@ export function initPortal(bridge) {
     dashboards.set(id, merged); return merged;
   }
   function releaseGuideAssets() { for (const url of guideObjectUrls) URL.revokeObjectURL(url); guideObjectUrls = []; }
-  function stopPageWork() { clearTimeout(refreshTimer); clearTimeout(pageTimer); releaseGuideAssets(); review.stop(); hidePopovers(); }
+  function stopPageWork() { clearTimeout(refreshTimer); clearTimeout(pageTimer); releaseGuideAssets(); review.stop(); atomic.stop(); hidePopovers(); }
   async function route() {
     if (currentHash) scrolls.set(currentHash, window.scrollY);
     currentRoute = parseRoute();
@@ -209,7 +237,7 @@ export function initPortal(bridge) {
     root.classList.toggle("reviewShell", currentRoute.path.startsWith("/review/"));
     if (bridge.getIdentityProblem()) { root.hidden = true; root.replaceChildren(); return; }
     updateSubjectContext(subjects?.find(subject => subject.id === currentRoute.subjectId) || null);
-    setNavigation(!currentRoute.subjectId ? "subjects" : currentRoute.path.startsWith("/courses") ? "courses" : currentRoute.path === "/guide" ? "guide" : "learn");
+    setNavigation(!currentRoute.subjectId ? "subjects" : currentRoute.path.startsWith("/courses") ? "courses" : currentRoute.path === "/guide" ? "guide" : currentRoute.path === '/reviews' ? 'reviews' : "learn");
     root.replaceChildren(loading()); window.scrollTo(0, 0);
     try {
       if (profile) await bridge.refreshAccess();
@@ -238,6 +266,23 @@ export function initPortal(bridge) {
         renderLearn(data, params.get("taskId"), ticket);
       } else if (path === "/courses") {
         document.title = pageTitle(t("nav.courses")); await renderCourses();
+      } else if (path === '/reviews') {
+        const data = await call('atomic/reviews');
+        if (ticket !== sequence) return;
+        document.title = pageTitle(t('atomic.reviewTitle'));
+        const list = node('section', 'atomicReviewList');
+        root.replaceChildren(node('h1', 'portalPageTitle', t('atomic.reviewTitle')), list);
+        for (const item of data.items) {
+          const card = node('article', 'courseChoice');
+          card.append(node('h2', '', item.title), node('p', '', t('atomic.dueCount', {count: item.due_count})));
+          if (item.paused) card.append(node('p', 'atomicPaused', t('atomic.paused')));
+          else if (!item.dependency_ready) card.append(node('p', '', t('portal.prerequisitesRequired')));
+          else card.append(link(t(item.active ? 'atomic.resumeReview' : 'atomic.startReview'), `#/review/${encode(item.topic_id)}/atomic`, 'primaryButton'));
+          list.append(card);
+        }
+        if (!data.items.length) list.append(emptyBox(t('atomic.noDue')));
+        if (data.next_due_at) list.append(node('p', '', t('atomic.availableAt', {time: apiDate(data.next_due_at, true)})));
+        refreshTimer = setTimeout(() => { if (ticket === sequence && !document.hidden) void route(); }, 15000);
       } else if (path === "/guide") {
         document.title = pageTitle(t("nav.guide")); await renderGuide(ticket);
       } else if (path === "/help") {
@@ -250,10 +295,14 @@ export function initPortal(bridge) {
         if (ticket !== sequence) return;
         dashboards.set(id, data); renderCourseProgress(data, params);
       } else if (/^\/topic\/[^/]+$/.test(path)) {
-        root.hidden = true;
-        await bridge.openTopic(decodeURIComponent(path.split("/")[2]), subjectId);
+        const topicId = decodeURIComponent(path.split('/')[2]);
+        const state = await call(`state?topic_id=${encode(topicId)}`);
+        if (ticket !== sequence) return;
+        if (state.training_mode === 'atomic_retrieval') await atomic.open(topicId, 'learn', state);
+        else { root.hidden = true; await bridge.openTopic(topicId, subjectId); }
       } else if (/^\/review\/[^/]+\/[^/]+$/.test(path)) {
-        await review.open(decodeURIComponent(path.split("/")[2]), decodeURIComponent(path.split("/")[3]), params.get("session"));
+        if (path.split('/')[3] === 'atomic') await atomic.open(decodeURIComponent(path.split('/')[2]), 'review');
+        else await review.open(decodeURIComponent(path.split("/")[2]), decodeURIComponent(path.split("/")[3]), params.get("session"));
       } else root.replaceChildren(errorBox(t("portal.this.page.does.not.exist.24"), () => navigate("/"), t("portal.page.not.found.25")));
       if (ticket !== sequence) return;
       const target = params.get("unitId") || params.get("topicId");
@@ -284,12 +333,12 @@ export function initPortal(bridge) {
       const card = node("article", "courseChoice"); card.dataset.courseId = course.id;
       card.append(node("h2", "", course.title), node("p", "courseDescription", course.description || ""));
       const learn = control(t("portal.learn.31"), "primaryButton courseLearn", async () => {
-        if (busyCourse) return; busyCourse = true;
+        if (busyCourse) return;
         const ticket = sequence, subjectId = currentRoute.subjectId;
         for (const item of root.querySelectorAll(".courseLearn")) item.disabled = true;
         learn.textContent = t("portal.selecting.32"); card.querySelector(".fieldError")?.remove();
         try {
-          await scopedRequest("catalog/select", { method: "POST", body: { course_id: course.id } }, subjectId);
+          await saveCourseSelection(course.id, subjectId);
           if (ticket !== sequence) return;
           selectedCourse = course.id; catalog.selected_course_id = course.id; scrolls.delete(learnHref());
           navigate("/learn");
@@ -620,7 +669,12 @@ export function initPortal(bridge) {
     helpHost.addEventListener("mouseenter", () => { helpMenu.hidden = false; });
     helpHost.addEventListener("mouseleave", () => { helpMenu.hidden = true; });
     helpHost.append(help, helpMenu); head.append(helpHost);
-    question.append(trustedContent(answer.html));
+    const stem = trustedContent(answer.html);
+    const reportContext = {course_id: task.course_id, topic_id: task.topic_id, task_id: task.id, question_id: answer.question_id};
+    reportableContent(stem, reportContext, `question:${answer.question_id}`, answer.content_version);
+    question.append(stem);
+    if (answer.interaction && answer.interaction.type !== 'text') question.append(questionInput(answer.interaction,
+      {id: `historyInteraction-${index}`, stem, value: answer.answer || '', disabled: true}).element);
     const meta = node("div", "answerMetadata");
     const difficulty = answer.difficulty == null ? "—" : ({ easy: t("portal.easy"), medium: t("portal.medium"), hard: t("portal.hard") }[answer.difficulty] || String(answer.difficulty));
     const elapsed = answer.elapsed_seconds == null ? "—" : t("portal.seconds", { count: Math.round(answer.elapsed_seconds).toLocaleString(locale()) });
@@ -629,8 +683,10 @@ export function initPortal(bridge) {
     const result = outcomes[answer.result] || (answer.correct === true ? t("portal.correct.80") : answer.correct === false ? t("portal.incorrect.81") : "—");
     const outcome = node("span", `answerOutcome ${answer.correct === true ? "correct" : answer.correct === false ? "incorrect" : ""}`, result); meta.append(outcome);
     const explanation = node("div", "answerExplanation"); explanation.hidden = true;
-    if (answer.explanation_html) explanation.append(trustedContent(answer.explanation_html)); else explanation.append(node("p", "", t("portal.no.explanation.is.available.for.this.question.86")));
-    if (answer.correct !== true) { explanation.append(node("h3", "", t("portal.your.answer.87")), node("pre", "historyYourAnswer", answer.answer == null || answer.answer === "" ? t("portal.unanswered.85") : answer.answer)); }
+    if (answer.explanation_html) explanation.append(reportableContent(trustedContent(answer.explanation_html), reportContext,
+      `explanation:${answer.question_id}`, answer.content_version)); else explanation.append(node("p", "", t("portal.no.explanation.is.available.for.this.question.86")));
+    if (answer.reason) explanation.append(node('p', 'feedbackReason', answer.reason));
+    if (answer.correct !== true) { explanation.append(node("h3", "", t("portal.your.answer.87")), node("pre", "historyYourAnswer", answer.answer == null || answer.answer === "" ? t("portal.unanswered.85") : answer.answer_display ?? answer.answer)); }
     const toggle = control(t("portal.show.explanation.88"), "answerExplanationToggle textButton", () => { explanation.hidden = !explanation.hidden; toggle.textContent = explanation.hidden ? t("portal.show.explanation.88") : t("portal.hide.explanation.89"); toggle.setAttribute("aria-expanded", String(!explanation.hidden)); }); toggle.setAttribute("aria-expanded", "false");
     question.addEventListener("click", (event) => { if (!event.target.closest("a,button")) toggle.click(); });
     wrapper.append(head, question, meta, toggle, explanation); return wrapper;
@@ -784,33 +840,61 @@ export function initPortal(bridge) {
   const feedbackClose = control("×", "iconButton", () => feedbackDialog.close()); feedbackClose.setAttribute("aria-label", t("portal.close.feedback.123")); feedbackHeading.append(feedbackTitle, feedbackClose);
   const feedbackLabel = node("label", "", t("portal.describe.the.issue.you.encountered.124")), feedbackInput = node("textarea"); feedbackInput.id = "feedbackMessage"; feedbackLabel.htmlFor = feedbackInput.id; feedbackInput.maxLength = 4000; feedbackInput.required = true; feedbackInput.rows = 7;
   const feedbackStatus = node("p", "feedbackStatus"); feedbackStatus.setAttribute("role", "status");
+  const correctionFields = node('div', 'correctionFields'); correctionFields.hidden = true;
+  const originalPreview = node('p', 'correctionPreview'), replacementPreview = node('p', 'correctionPreview');
+  const replacementLabel = node('label', '', t('correction.replacement')), replacementInput = node('textarea');
+  replacementInput.id = 'correctionReplacement'; replacementInput.maxLength = 2000; replacementInput.rows = 2;
+  replacementLabel.htmlFor = replacementInput.id;
+  correctionFields.append(node('h3', '', t('correction.original')), originalPreview,
+    node('h3', '', t('correction.preview')), replacementPreview, replacementLabel, replacementInput);
+  function previewCorrection() {
+    const quote = feedbackContext.correction?.quote;
+    if (!quote) return;
+    for (const [preview, value] of [[originalPreview, quote.exact], [replacementPreview, replacementInput.value]]) {
+      preview.replaceChildren(document.createTextNode(quote.prefix), node('strong', '', value), document.createTextNode(quote.suffix));
+    }
+  }
+  replacementInput.addEventListener('input', previewCorrection);
   const feedbackActions = node("div", "dialogActions"), feedbackCancel = control(t("portal.cancel.125"), "secondaryButton", () => feedbackDialog.close()), feedbackSubmit = node("button", "primaryButton", t("portal.submit.126")); feedbackSubmit.type = "submit";
-  feedbackActions.append(feedbackCancel, feedbackSubmit); feedbackForm.append(feedbackHeading, feedbackLabel, feedbackInput, feedbackStatus, feedbackActions); feedbackDialog.append(feedbackForm); document.body.append(feedbackDialog);
+  feedbackActions.append(feedbackCancel, feedbackSubmit); feedbackForm.append(feedbackHeading, correctionFields, feedbackLabel, feedbackInput, feedbackStatus, feedbackActions); feedbackDialog.append(feedbackForm); document.body.append(feedbackDialog);
   function showFeedback(context = {}) {
-    if (feedbackBusy) return;
+    if (feedbackBusy || feedbackDialog.open) return;
     const matchesSelected = !context.topic_id || selectedDashboard()?.topics?.some((topic) => topic.id === context.topic_id);
     feedbackContext = { ...(selectedCourse && matchesSelected ? { course_id: selectedCourse } : {}), ...context };
-    feedbackTitle.textContent = context.question_id ? t("portal.report.a.content.error.127") : t("portal.feedback.122");
+    const correction = Boolean(context.correction);
+    feedbackTitle.textContent = correction ? t('correction.title') : context.question_id ? t("portal.report.a.content.error.127") : t("portal.feedback.122");
+    correctionFields.hidden = !correction; replacementInput.value = ''; replacementInput.disabled = false;
+    feedbackLabel.textContent = t(correction ? 'correction.comment' : 'portal.describe.the.issue.you.encountered.124');
+    feedbackInput.required = !correction; feedbackInput.rows = correction ? 2 : 7; feedbackInput.maxLength = correction ? 2000 : 4000;
+    previewCorrection();
     feedbackStatus.textContent = ""; feedbackInput.value = ""; feedbackInput.hidden = false; feedbackLabel.hidden = false; feedbackSubmit.hidden = false; feedbackCancel.textContent = t("portal.cancel.125");
     if (!feedbackDialog.open) feedbackDialog.showModal();
+    (correction ? replacementInput : feedbackInput).focus();
   }
   feedbackForm.addEventListener("submit", async (event) => {
-    event.preventDefault(); if (feedbackBusy || !feedbackInput.value.trim()) return;
+    event.preventDefault(); if (feedbackBusy || (!feedbackContext.correction && !feedbackInput.value.trim())) return;
     feedbackBusy = true; feedbackSubmit.disabled = true; feedbackClose.disabled = true; feedbackCancel.disabled = true; feedbackStatus.textContent = t("portal.saving.feedback.128");
     try {
-      const result = await call("feedback", { method: "POST", body: { message: feedbackInput.value.trim(), ...feedbackContext } });
+      feedbackInput.disabled = true; replacementInput.disabled = true;
+      const correction = feedbackContext.correction ? {...feedbackContext.correction,
+        operation: replacementInput.value === '' ? 'delete' : 'replace', replacement: replacementInput.value, comment: feedbackInput.value.trim()} : null;
+      const result = await call("feedback", { method: "POST", body: { message: feedbackInput.value.trim() || t('correction.title'),
+        ...feedbackContext, ...(correction ? {correction} : {}) } });
       if (result.status !== "saved") throw new Error(t("portal.feedback.was.not.confirmed.as.saved.please.try.again.129"));
-      feedbackStatus.textContent = t("portal.feedback.saved.thank.you.130"); feedbackInput.hidden = true; feedbackLabel.hidden = true; feedbackSubmit.hidden = true; feedbackCancel.textContent = t("portal.close.131");
+      feedbackStatus.textContent = t("portal.feedback.saved.thank.you.130"); correctionFields.hidden = true; feedbackInput.hidden = true; feedbackLabel.hidden = true; feedbackSubmit.hidden = true; feedbackCancel.textContent = t("portal.close.131");
     } catch (error) { feedbackStatus.textContent = translateMessage(error.message); }
-    finally { feedbackBusy = false; feedbackSubmit.disabled = false; feedbackClose.disabled = false; feedbackCancel.disabled = false; }
+    finally { feedbackBusy = false; feedbackSubmit.disabled = false; feedbackClose.disabled = false; feedbackCancel.disabled = false; feedbackInput.disabled = false; replacementInput.disabled = false; }
   });
   feedbackDialog.addEventListener("cancel", (event) => { if (feedbackBusy) event.preventDefault(); });
+  feedbackDialog.addEventListener('close', () => { feedbackContext = {}; feedbackInput.value = ''; replacementInput.value = ''; });
+  const contentReporting = installContentReporting(showFeedback);
 
   window.addEventListener("hashchange", route);
   history.scrollRestoration = "manual";
   return {
     start: route,
     setIdentity(next) {
+      if (JSON.stringify(identity) !== JSON.stringify(next)) catalogPicker.reset();
       if (identity?.learner_id !== next?.learner_id || identity?.role !== next?.role) subjects = null;
       if (identity?.learner_id && next?.learner_id !== identity.learner_id) profile = null;
       if (identity && (JSON.stringify(identity.features) !== JSON.stringify(next?.features) || JSON.stringify(identity.topics) !== JSON.stringify(next?.topics))) {
@@ -819,6 +903,8 @@ export function initPortal(bridge) {
       identity = next; updateUser();
     },
     suspendIdentity() {
+      catalogPicker.reset();
+      contentReporting.clear();
       sequence += 1; stopPageWork(); showMenu(false); bridge.leaveTopic();
       subjects = null; catalog = null; profile = null; selectedCourse = null; dashboards.clear(); answerCache.clear(); scrolls.clear();
       paging = false; busyCourse = false; expandedTask = null; root.replaceChildren(); root.hidden = true;
@@ -826,7 +912,7 @@ export function initPortal(bridge) {
       if (feedbackDialog.open) feedbackDialog.close();
       feedbackInput.value = "";
     },
-    permissionsChanged() { catalog = null; dashboards.clear(); answerCache.clear(); },
+    permissionsChanged() { catalogPicker.reset(); catalog = null; dashboards.clear(); answerCache.clear(); },
     async identityChanged() { subjects = null; catalog = null; profile = null; dashboards.clear(); answerCache.clear(); scrolls.clear(); await route(); },
     progressChanged() { /* Returning to Learn reads current server progress without changing it. */ },
     showFeedback,
